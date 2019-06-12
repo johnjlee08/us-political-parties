@@ -1,0 +1,680 @@
+---
+title: "301-2 Final Project"
+author: "John Lee"
+date: "March 14, 2019"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<br>
+
+## Introduction
+
+My proposed data source is the General Social Survey (GSS), which is run by the National Opinion Research Center (NORC) at the University of Chicago. The GSS is one of the best known sources of nationally representative public opinion survey data in the U.S., with data that dates back to the 1970s. The GSS uses a stratified probability-based sampling method and asks a large number of questions related to social, cultural, political, and economic issues. The survey is typically done once every two years. 
+
+Here is a link to the dataset: https://gssdataexplorer.norc.org/ The website has a user-friendly platform from which we can just pick and choose which variables we would like to download (“GSS Data Explorer”). My main reason for choosing this dataset is that for many relevant topics, the survey has been asking the same questions for the past 40+ years. 
+
+My dependent variable of interest is the subject’s answer to a question about party ID. It asks the following: *“Generally speaking, do you usually think of yourself as a Republican, Democrat, Independent, or what?” The answer choices are organized using a logical and intuitive 7-point scale from “Strong Democrat” to “Strong Republican.”* 
+
+The citation for the data source is the following:
+
+Smith, Tom W, Michael Davern, Jeremy Freese, and Michael Hout. General Social Surveys, 1972-2016 [machine-readable data file] /Principal Investigator, Tom W. Smith; Co-Principal Investigator, Michael Davern; Co-Principal Investigator, Jeremy Freese; Co-Principal Investigator, Michael Hout; Sponsored by National Science Foundation. --NORC ed.-- Chicago: NORC at the University of Chiago [producer]; Storrs, CT: The Roper Center for Public Opinion Research, University of Connecticut [distributor], 2018.
+
+**I have two research questions**: 
+
+(1) What explains support for political parties in the U.S. context? In particular, I’ll focus on support for the Democratic Party (because out of the two major parties, the letter D comes before R). The focus here is on identifying statistically and substantively significant predictors (i.e., which specific predictors matter? And how much do these individual predictors matter?)
+
+(2) Overall (i.e., multiple relevant predictors are used), how well can we predict support for political parties? How good is the "best" model? The focus here is on assessing the adjusted R-squared and the size of the test MSE. 
+
+My research question is necessarily predictive, because I don’t have the kind of data I need (e.g., panel data) for a more robust method that provide a good basis for causal inference (e.g., linear FE models with robust standard errors). However, because most people agree that policy outcomes are largely shaped to public preferences – and that preferences are in some way tied to party ID and partisan messaging – I think a less ambitious project based on predictive goals would still have some merit. 
+
+**Overview of the project report:** 
+
+(1) Exploratory Data Analysis (EDA)
+
+(2) Model-building
+
+(3) Model Validation
+
+(4) Model Testing
+
+<br>
+
+## Part 1: EDA
+
+During the data collection stage, my goal was to find all of the variables that were available between 1974-2016. The full sample had 62,466 observations and 64 variables (including DV and year). 
+
+The data cleaning process entailed doing the following (please refer to my data cleaning R script for more details): 
+
+* Filter in variables of interest (remove redundant predictors, predictors with a lot of missing data)
+* Rename predictor names (more intuitive names), set the correct variable type (e.g., convert character variables into factor variables)
+* Recode the values (e.g., sometimes needed to reverse code); this entailed creating custom functions
+* For the categorical variables, explicitly set the reference categories (e.g., New England for geographic region)
+
+The final dataset had 17,718 observations and 35 variables (including the DV and year). The DV is called `strong_dem`. It is measured using a 1-7 scale, where 1 indicates that the respondent self-identifies as a strong Republican and 7 indicates that the respondent identifies as a strong Democrat. I decided to operationalize the DV as a continuous (or numeric) variable because the distance between each answer choice is roughly the same, the answer choices are symmetrical (e.g., strong Democrat to Strong Republican), and having a continuous DV would let me use linear modeling techniques -- which are generally easier to interpret. 
+
+Below is a list of the variables in the dataset. A clarifying note about the variables: there are many variables that look something like this `moresp_natarms`. These variables measure the respondent's policy preferences regarding a set of specific issues: e.g., welfare, public education, foreign aid, and so on. These predictors are binary variables: a 1 indicates that the respondent wants more public spending in this area (e.g., on public education); a 0 indicates that the respondent does not favor more spending (e.g., keeping spending the same or reducing it).
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Load packages for the data cleaning
+library(tidyverse)
+library(forcats)
+library(modelr)
+library(haven) # for importing foreign files
+library(skimr)
+library(corrplot) # for the correlation matrix
+library(gridExtra) # to combine graphs
+
+# Set the seed
+set.seed(3)
+
+EDA_df <- readRDS("data/processed/EDA_df.rds")
+
+names(EDA_df)
+```
+
+Before doing any of the analysis, I randomly split the final dataset into four parts (with the seed set to 3, per class norms): 
+
+(1) EDA: 25%
+(2) Model-building: 25%
+(3) Model validation: 25%
+(4) Model testing: 25%
+
+With the EDA dataset, I'll perform a basic EDA: e.g., look at the distribution of the DV, examine the bivariate relationships. With the model-building dataset, I'll select the candidate models: i.e., the best model for each method (e.g., lasso, ridge, PCR). With the model validation set, I'll compare the candidate models and choose the "best" model as my finalist. Finally, I'll evaluate the performance of my final model using the held-out test set. 
+
+Now, I'll proceed to the EDA. Figure 1 below displays the distribution of the DV: i.e., a 1-7 point scale indicating how strongly the respondent supports the Democratic Party. There is a large number of respondents at each level of the DV, which is good for estimation purposes. 
+
+<br>
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Code to center the plot title as the default option
+theme_update(plot.title = element_text(hjust = 0.5))
+
+# Check the distribution of the DV
+EDA_df %>%
+  ggplot(aes(x = strong_dem)) +
+           geom_histogram() +
+  ggtitle("Figure 1: Distribution of Democratic Party ID") +
+  labs(x = "Strength of Democratic Party ID", y = "Count", fill = "Wave #")
+```
+
+Below is a correlation matrix which visually depicts the strength of the linear association among the numeric variables. We can see most of the other variables are only weakly correlated with the DV. The one exception is political liberalism, which has a moderately positive association with the strength of support for the Democratic party. 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Create a visual of the correlation matrix
+# First, just filter in the numeric vars
+EDA_df_numeric <- EDA_df %>%
+  select(
+    strong_dem, age, dad_yrs_educ, hh_size, ln_famincome, mom_yrs_educ, 
+    num_kids, num_sibs, pol_liberalism, year, yrs_educ
+  )
+  
+corr_m_EDA <- cor(EDA_df_numeric)
+
+# Then create a plot of the correlation matrix
+corrplot(corr_m_EDA, method = "circle")
+```
+
+To investigate this further, I create a scatter plot of the DV against political liberalism. Indeed, it looks as though there is a positive correlation between the two variables.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Political Liberalism v. DV
+EDA_df %>%
+  ggplot(aes(x = pol_liberalism, y = strong_dem)) +
+  geom_point() +
+  geom_jitter(alpha = .3) +
+  geom_smooth(method = "lm") +
+  labs(x = "Political Liberalism", y = "Strength of Democratic Party ID") +
+  ggtitle("Figure 2: Scatter Plot of Democratic Party ID and Pol. Liberalism")
+```
+
+Next, I also examine the relationship between several categorical predictors and the DV. First, I'll look at two key demographic predictors: gender and race. According to the results below, it looks as though women (relative to non-women) and non-whites (relative to whites) are stronger supporters of the Democratic Party. 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+cat1 <- EDA_df %>%
+  ggplot(aes(x = female, y = strong_dem)) +
+  geom_boxplot() +
+  labs(x = "Female", y = "Strength of Democratic Party ID") +
+  ggtitle("Figure 3: Democratic Party ID and Gender")
+
+cat2 <- EDA_df %>%
+  ggplot(aes(x = race_text, y = strong_dem)) +
+  geom_boxplot() +
+  labs(x = "Race", y = "Strength of Democratic Party ID") +
+  ggtitle("Figure 4: Democratic Party ID and Race")
+
+grid.arrange(cat1, cat2, nrow = 1)
+```
+
+Next, I'll look at the relationship between the DV and two social factors: subjective class ID and religion. The results below suggest that the divisions by class and religion are meaningful. Those who identify as members of the lower and working classes tend to be more aligned with the Democrats; in contrast, those in the middle and upper classes are evenly distributed between both parties. Protestants tend to be split among the parties, but those in other religious groups lean more toward the Democrats. 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+cat3 <- EDA_df %>%
+  ggplot(aes(x = religion, y = strong_dem)) +
+  geom_boxplot() +
+  labs(x = "Religious Group", y = "Strength of Democratic Party ID") +
+  coord_flip()
+
+cat4 <- EDA_df %>%
+  ggplot(aes(x = subj_classid_text, y = strong_dem)) +
+  geom_boxplot() +
+  labs(x = "Subjective Class ID", y = "Strength of Democratic Party ID") +
+  coord_flip()
+
+grid.arrange(cat3, cat4, nrow = 1)
+
+```
+
+While the results above are certainly not exhaustive, and I could have examined more sets of bivariate relationships, the points are clear: many of the predictors -- especially the categorical variables -- seem to be correlated with the DV. However, what's less clear from the EDA alone is how well we can predict the DV using these predictors. Which predictors are the most important? To answer this question, I proceed to the model-building stage of my report. 
+
+<br>
+
+## Part 2: Model-building 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Load packages
+library(haven)
+library(modelr)
+library(janitor)
+library(skimr)
+library(leaps) # best subset selection
+library(glmnet) # ridge & lasso
+library(glmnetUtils) # improves working with glmnet
+library(pls) # pcr and pls
+library(tidyverse)
+
+# Set the random seed to 3
+set.seed(3)
+
+# Load the model-building set 
+modbuilding_set <- readRDS("data/processed/modbuilding_set.rds")
+```
+
+In the model-building stage, my goal is the following: I want to identify the best model associated with each method (e.g., OLS, ridge regression, lasso regression, PCR). These best models will together constitute my candidate models -- and they'll be advanced to stage 3 (validation), where they'll be compared against each other and a finalist will be chosen. 
+
+The model-building stage as two parts. In the first part of this stage, I'll develop five OLS models based on my knowledge of the existing literature as well as the EDA in the previous section. I'll fit each of these models using one half of the model-builing set; then, I'll test them using the second half of the model-building set. The model with the smallest test MSE will become one of my candidate models. 
+
+In the second part of the model-building stage, I'll use k-fold cross-validation (with k = 10) to identify the optimal tuning parameters for each of the methods used: i.e., lambda for ridge and lasso regression; and M (or the number of principal components) for PCR and PLS. The model built using the optimal tuning parameter will be the best model from each method -- and these best models will become the rest of the candidate models. 
+
+<br>
+
+#### Best OLS Model
+
+Below, is the baseline OLS model. Each of the five OLS models I will test adds a single interaction term to the baseline model (also displayed below). The purpose of each interaction term is to test whether the link between the predictor (e.g., race) and support for the Democrats varies as a function of year. There are reasons to expect this would be the case. For example, many pundits and scholars have argued that the U.S. public has become more polarized in recent years -- i.e., the political parties have allegedly become more ideologically pure and homogeneous. If this were the case, then we would expect the interaction term for `year:pol_liberalism` to be statistically significant and positive. 
+
+```{r, warning = FALSE, message = FALSE}
+# Create the baseline fmla
+baseline_fmla <- "strong_dem ~ year + age + race_text + female + religion + subj_classid_text + 
+ln_famincome + yrs_educ + pol_liberalism + moresp_natwelfare + moresp_natdrug + moresp_natarms + 
+  moresp_natenvir + moresp_natrace "
+
+# Mod names
+mod_names <- c("+ year:race_text", 
+               "+ year:female",
+               "+ year:ln_famincome",
+               "+ year:yrs_educ",
+               "+ year:pol_liberalism")
+```
+
+I've displayed the findings of the OLS analysis below. The results indicate that the model that includes the interaction term `year:pol_liberalism` generated the lowest test MSE. For that reason, this will become my best OLS model and advance as one of the candidate models. However, it's worth noting that the differences in test MSE are quite small, and that given a slightly different dataset (e.g., due to a different seed), another OLS model could have achieved the lowest test MSE. 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Create the fmlas for each model
+ols_fmlas <- paste0(baseline_fmla, mod_names)
+
+# Split the validation set into two parts: (1) model_building, (2) model_val 
+val_set <- tibble(model_building = modbuilding_set %>% sample_frac(0.5) %>% list(),
+                  model_val = modbuilding_set %>% setdiff(model_building) %>% list(),
+                  mod_names = mod_names,
+                  fmla = ols_fmlas)
+
+# Custom function that computes test MSE
+compute_test_mse <- function(actual_values, df_with_fitted){
+  pred_values <- df_with_fitted %>% pull(pred)
+  mean((actual_values - pred_values)^2)
+}
+
+# Create a vector of actual outcomes (observed Y values for the val/test set)
+actual_outcomes <- val_set[1,] %>% 
+  unnest(model_val) %>%
+  pull(strong_dem) %>%
+  list()
+
+# Generate the test MSE for each model
+val_set <- val_set %>%
+  # First, fit OLS models using the training set
+  mutate(model_fit = map2(fmla, model_building, .f = lm),
+         # Next, generate fitted values using the test set
+         with_fitted = map2(model_val, model_fit, add_predictions),
+         actual_outcomes = actual_outcomes,
+         test_mse = map2_dbl(actual_outcomes, with_fitted, .f = compute_test_mse)
+  )
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Compare the test MSE across the models
+val_set %>%
+  dplyr::select(mod_names, test_mse) %>%
+  arrange(test_mse) %>%
+  knitr::kable(digits = 3)
+
+# Save the best mod 
+best_OLS_name <- val_set %>%
+  dplyr::select(mod_names, test_mse) %>%
+  arrange(test_mse) %>% 
+  # Add a var for rank
+  mutate(rank = row_number()) %>%
+# Just filter in and store the best mod (rank #1)
+  filter(rank == 1) %>%
+  pull(mod_names)
+
+best_OLS_mod <- paste0(baseline_fmla, best_OLS_name)
+```
+
+Next, I use 10-fold CV to identify the optimal tuning parameters for the ridge regression, lasso regression, PCR, and PLS, respectively. 
+
+<br>
+
+#### Best Ridge Regression Model
+
+The plot below shows the MSE as a function of the logged lambda. According to the CV process, the ridge regression generates the lowest MSE when the lambda is 0.1607053. The largest lambda value within one SD of the minimum MSE is 1.122668.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Load the validation set 
+validation_set <- readRDS("data/processed/validation_set.rds")
+
+# Set up the lambda grid (200 values)
+lambda_grid <- 10^seq(-2, 10, length = 200)
+
+# Find the optimal lambda by using K-fold CV (with k = 10)
+ridge_mod_10fcv <- modbuilding_set %>% 
+  cv.glmnet(formula = strong_dem ~ ., data = ., 
+            alpha = 0, nfolds = 10, 
+            lambda = lambda_grid)
+
+# Check plot of cv error
+plot(ridge_mod_10fcv)
+
+# Best lambdas for the Ridge mod (using 10-fold CV)
+ridge_lambda_min <- ridge_mod_10fcv$lambda.min
+ridge_lambda_1se <- ridge_mod_10fcv$lambda.1se
+```
+
+<br>
+
+#### Best Lasso Regression Model
+
+Next, I move on to the lasso regression model. Unlike the ridge, the lasso actually zeros out the coefficients of predictors that are insufficiently associated with the DV. The plot below shows the MSE as a function of the logged lambda. According to the CV process, the lasso regression generates the lowest MSE when the lambda is 0.01742633. The largest lambda value within one SD of the minimum MSE is 0.0698588.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# lasso: 10-fold cv
+lasso_mod_10fcv <- modbuilding_set %>% 
+  cv.glmnet(formula = strong_dem ~ ., data = ., 
+            alpha = 1, nfolds = 10, 
+            lambda = lambda_grid)
+
+# Check plot of cv error
+plot(lasso_mod_10fcv)
+
+# lasso's best lambdas
+lasso_lambda_1se <- lasso_mod_10fcv$lambda.1se
+lasso_lambda_min <- lasso_mod_10fcv$lambda.min
+
+# Save the best model per method in a tibble
+partyid_glmnet <- tibble(train = modbuilding_set %>% list(),
+                        test  = validation_set %>% list()) %>%
+  mutate(ridge_min = map(train, ~ glmnet(strong_dem ~ ., data = .x,
+                                         alpha = 0, lambda = ridge_lambda_min)),
+         ridge_1se = map(train, ~ glmnet(strong_dem ~ ., data = .x,
+                                         alpha = 0, lambda = ridge_lambda_1se)),
+         lasso_min = map(train, ~ glmnet(strong_dem ~ ., data = .x,
+                                         alpha = 1, lambda = lasso_lambda_min)),
+         lasso_1se = map(train, ~ glmnet(strong_dem ~ ., data = .x,
+                                         alpha = 1, lambda = lasso_lambda_1se))) %>% 
+  gather(key = method, value = fit, -test, -train)
+```
+
+Below, I fit the ridge and lesso regression models using the optimal tuning parameters identified in the CV process above: i.e., the lambda values that generated the lowest test MSE as well as the largest lambda values with test MSEs within one SD of the minimum MSE. The regression coefficients with each of these models are displayed below for comparison purposes. 
+
+In general, the slope coefficients seem quite similar across the models. What's especially interesting is that the lasso models seem to be zeroing out many of the coefficients -- which indicates that many of the predictors are not meaningfully associated with the DV, once we've accounted for the other predictors. For example, it turns out that when other key predictors are included in the model (e.g., key demographic and social predictors), geographic region does not seem to add any additional predictive ability to the model. 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Compare model coefficients 
+partyid_glmnet %>% 
+  # Extract fit
+  pluck("fit") %>% 
+  map( ~ coef(.x) %>% 
+         as.matrix() %>% 
+         as.data.frame() %>% 
+         rownames_to_column("name")) %>%
+  reduce(full_join, by = "name") %>% 
+  mutate_if(is.double, ~ if_else(. == 0, NA_real_, .)) %>% 
+  rename(ridge_min = s0.x,
+         ridge_1se = s0.y,
+         lasso_min = s0.x.x,
+         lasso_1se = s0.y.y) %>% 
+  knitr::kable(digits = 3)
+```
+
+<br>
+
+#### Best Principal Component Regression Model
+
+Next, I'll find the optimal value of M (or the number of principal components) for a first-order PCR model. PCR (and PLS) can be useful tools when many of the predictors are highly correlated. PCR can be used to create more parsimonious models by converting the original predictors into a set of principal components which efficiently represent the variance of the original predictors. 
+
+As illustrated via the plot below, for PCR, further reductions in MSEP appear to decline after M = 40 or so. As such, the PCR model with M = 40 is chosen as the candidate model for this method. 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# pcr: 10-fold cv
+pcr_mod_10fcv <- modbuilding_set %>% 
+  pcr(strong_dem ~ ., data = ., scale = TRUE, validation = "CV")
+
+# Using root mean squared error
+validationplot(pcr_mod_10fcv, val.type = "MSEP")
+# The best M is probably around 40
+abline(v = 40)
+```
+
+<br>
+
+#### Best Partial Least Squares (PLS) Regression Model
+
+Similarly, we can also use 10-fold CV to find the optimal M for a PLS regression model. As indicated by the plot below, the best M is around a 4. After 4 principal components, adding additional PCs does not appear to meaningfully improve the accuracy of the PLS model. 
+
+It's worth noting that the difference between the ideal M for the PCR and PLS models are quite large: i.e., 40 and 4, respectively. This is likely rooted in the fact that the PLS is a supervised form of PCR, in which only PCs that are related to both the original predictors and also the DV are selected. By imposing this additional constraint, it is often the case that the M of a PLS is smaller than that of a PCR. In this case, the optimal M of the PLS is substantially smaller (i.e., 4 compared to 40), which suggests that only a small number of principal components are related to the DV. 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# pls: 10-fold cv
+pls_mod_10fcv <- modbuilding_set %>% 
+  plsr(strong_dem ~ ., data = ., scale = TRUE, validation = "CV")
+
+validationplot(pls_mod_10fcv, val.type = "MSEP")
+# The best M is probably around 4
+abline(v = 4)
+
+# Save the results 
+partyid_pcr_pls <- tibble(train = modbuilding_set %>% list(),
+                          test  = validation_set %>% list()) %>%
+  mutate(pcr_40m = map(train, ~ pcr(strong_dem ~ ., data = .x, ncomp = 40)),
+         pls_4m = map(train, ~ plsr(strong_dem ~ ., data = .x, ncomp = 4))) %>% 
+  gather(key = method, value = fit, -test, -train)
+```
+
+<br>
+
+#### Best Forward Selection Model
+
+Finally, I'll employ two additional methods: the forward and backward selection methods. Best subset selection was not used because it was too computationally demanding: it requires fitting and comparing $2^p$ models. I tried running it and my R crashed. 
+
+To select the optimal number of predictors, I'll again use 10-fold CV. When I use this CV process with forward selection, it appears as though the optimal number of predictors is 48. However, the CV MSE is very similar across the top 5 options: it appears as though 44-48 predictors could have been chosen. Since everything else being equal (or sufficiently similar), parsimonious models are preferred, I'll use the model with 44 predictors as my candidate model for the forward selection method. 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+## Helper functions for the subset selection methods (e.g., forward)
+
+# Get predicted values using regsubset object
+predict_regsubset <- function(object, fmla, new_data, model_id)
+{
+  # If not a df, convert to a tibble -- how to handle resample objects/k-folds
+  if(!is.data.frame(new_data)){
+    new_data <- as_tibble(new_data)
+  }
+  
+  # Get formula
+  obj_formula <- as.formula(fmla)
+  
+  # Extract coefficients for desired model
+  coef_vector <- coef(object, model_id)
+  
+  # Get appropriate feature matrix for new_data
+  x_vars <- names(coef_vector)
+  mod_mat_new <- model.matrix(obj_formula, new_data)[ , x_vars]
+  
+  # Get predicted values
+  pred <- as.numeric(mod_mat_new %*% coef_vector)
+  
+  return(pred)
+}
+
+# Calculate test MSE on regsubset objects
+test_mse_regsubset <- function(object, fmla, test_data){
+  
+  # Number of models
+  num_models <- object %>% summary() %>% pluck("which") %>% dim() %>% .[1]
+  
+  # Set up storage
+  test_mse <- rep(NA, num_models)
+  
+  # Observed targets
+  obs_target <- test_data %>% 
+    as_tibble() %>% 
+    pull(!!as.formula(fmla)[[2]])
+  
+  # Calculate test MSE for each model class
+  for(i in 1:num_models){
+    pred <- predict_regsubset(object, fmla, test_data, model_id = i)
+    test_mse[i] <- mean((obs_target - pred)^2)
+  }
+  
+  # Return the test errors for each model class
+  tibble(model_index = 1:num_models,
+         test_mse = test_mse)
+}
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Forward selection: use 10-fold CV to select optimal number of vars
+partyid_fwd_cv <- modbuilding_set %>% 
+  crossv_kfold(10, id = "folds") %>% 
+  mutate(fmla = "strong_dem ~ .",
+         model_fits = map2(fmla, train, ~ regsubsets(as.formula(.x), 
+                                                     data = .y, nvmax = 50, method = "forward")),
+         model_fold_mse = pmap(list(model_fits, fmla, test), test_mse_regsubset))
+
+# Look at the outcomes (the best model had 48 predictors)
+partyid_fwd_cv %>% 
+  unnest(model_fold_mse) %>% 
+  group_by(model_index) %>%  
+  summarize(test_mse = mean(test_mse)) %>% 
+  arrange(test_mse) %>%
+  head(n = 5) %>%
+  knitr::kable(digits = 3)
+```
+
+#### Best Backward Selection Model
+
+Similarly, I repeat running 10-fold CV to identify the optimal number of predictors for backward selection. Again, it appears as though this occurs when 48 predictors are used. However, the differences in CV MSE for models that use 44-48 predictors are very similar. Thus, using the same rationale as the one described above, the backward selection model with 44 predictors will be used as one of my candidate models. 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Backward selection: use 10-fold CV to select optimal number of variables
+partyid_backw_cv <- modbuilding_set %>% 
+  crossv_kfold(10, id = "folds") %>% 
+  mutate(fmla = "strong_dem ~ .",
+         model_fits = map2(fmla, train, ~ regsubsets(as.formula(.x), 
+                                                     data = .y, nvmax = 50, method = "backward")),
+         model_fold_mse = pmap(list(model_fits, fmla ,test), test_mse_regsubset))
+
+# Look up the results (48 predictors is the best)
+partyid_backw_cv %>% 
+  unnest(model_fold_mse) %>% 
+  group_by(model_index) %>%  
+  summarise(test_mse = mean(test_mse)) %>% 
+  arrange(test_mse) %>%
+  head(n = 5) %>%
+  knitr::kable(digits = 3)
+
+# Ok, now I want to save the results in a combined regsubsets df so that it can later be used to compute the test MSE for each "best" model
+
+partyid_regsubsets <- tibble(train = modbuilding_set %>% list(),
+                            test  = validation_set %>% list()) %>%
+  mutate(fwd_selection = map(train, ~ regsubsets(strong_dem ~ ., 
+                                                 data = .x, nvmax = 44, 
+                                                 method = "forward")),
+         back_selection = map(train, ~ regsubsets(strong_dem ~ ., 
+                                                  data = .x, nvmax = 44, 
+                                                  method = "backward"))) %>% 
+  gather(key = method, value = fit, -test, -train)
+```
+
+Since both the forward and backward selection candidate models use 44 predictors, are they the same 44 predictors? We can check this below. It turns out that while the models share most of the same predictors, there are a few differences -- and consequently, the regression coefficients for the shared predictors are also slightly different. 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Inspect/compare model coefficients 
+partyid_regsubsets %>% 
+  pluck("fit") %>% 
+  map( ~ coef(.x, id = 44)) %>% 
+  map2(c("fwd", "back"), ~ enframe(.x, value = .y)) %>% 
+  reduce(full_join) %>% 
+  knitr::kable(digits = 3)
+```
+
+<br>
+
+## Part 3: Model Validation
+
+In this third stage, I compared the candidate models by testing them using the validation set (25% of the full sample). To clarify, I mean that I fit each of the candidate models using the full model-building set, and then tested them against the validation set. Below, we can see the test MSE by model. 
+
+The results below indicate that the best candidate model is associated with the PCR: i.e., the PCR with 40 principal components. My OLS model was ranked in 6th place. However, it's important to note that the test MSEs are again quite similar across the candidate models (and certainly among the top 8 performers). Since the MSEs are so similar, it's reasonable to expect that the rank order could change if the validation set had been slightly different. 
+
+Because of this reason, I've decided to select my OLS model as the finalist. Although it performed slightly less well than the 1st place method/model, the OLS is preferable because unlike the PCR, it actually generates regression coefficients -- which are relatively easy to interpret. In addition to the benefits of high interpretability, selecting the OLS also means that I can test the interaction between political liberalism and support for the Democratic Party -- which, as discussed earlier, is interesting for theoretical reasons. 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Test error for the best OLS model 
+ols_error <- tibble(train = modbuilding_set %>% list(),
+                    test = validation_set %>% list(),
+                    mod_name = best_OLS_mod,
+                    fmla = best_OLS_mod) %>%
+  mutate(model_fit = map2(fmla, train, .f = lm),
+         with_fitted = map2(test, model_fit, add_predictions)) %>%
+         # Next, estimate the test error (MSE) 
+         unnest(with_fitted) %>% 
+           # Compute (actual - fitted)^2 
+           mutate(sq_deviations = (strong_dem - pred)^2) %>% 
+           # Compute the mean of the squared deviations (which = MSE)
+           summarize(test_mse = mean(sq_deviations)) %>%
+  pull(test_mse)
+
+ols_error <- tibble(method = "ols", test_mse = ols_error)
+
+# Test error for ridge and lasso models
+glmnet_error <- partyid_glmnet %>% 
+  mutate(pred = map2(fit, test, predict),
+         test_mse = map2_dbl(test, pred, ~ mean((.x$strong_dem - .y)^2))) %>% 
+  unnest(test_mse, .drop = TRUE)
+
+# Test error for PCR and PLSR models
+dim_reduce_error <- partyid_pcr_pls %>% 
+  mutate(pred = pmap(list(fit, test, c(40,4)), predict),
+         test_mse = map2_dbl(test, pred, ~ mean((.x$strong_dem - .y)^2))) %>% 
+  unnest(test_mse, .drop = TRUE)
+
+# Test error for the forward and backward selection models
+regsubset_error <- partyid_regsubsets %>% 
+  mutate(test_mse = map2(fit, test, ~ test_mse_regsubset(.x, strong_dem ~ ., .y))) %>% 
+  unnest(test_mse) %>% 
+  filter(model_index == 44) %>% 
+  dplyr::select(-model_index)
+
+# Test errors combined and organzied
+ols_error %>%
+  bind_rows(glmnet_error) %>% 
+  bind_rows(dim_reduce_error) %>% 
+  bind_rows(regsubset_error) %>% 
+  arrange(test_mse) %>%
+  mutate(rank = row_number()) %>% 
+  dplyr::select(rank, method, test_mse) %>%
+  knitr::kable(digits = 3)
+```
+
+<br>
+
+## Part 4: Model Testing
+
+In the final stage, I will take my final model (which was fit using the model-building set) and test it using the held-out test set. When I do this, my test MSE which is 3.005; this is actually lower than the lowest test MSE achieved during the previous validation stage -- in which the PCR model with 40 principal components achieved the lowest test MSE of 3.013. This supports the argument that although the OLS did not perform the best during the validation stage, it is still a good model relative to its competitors. 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Load the final test set 
+test_set <- readRDS("data/processed/test_set.rds")
+
+# Test error for the best OLS model 
+ols_error <- tibble(train = modbuilding_set %>% list(),
+                    test = test_set %>% list(),
+                    mod_name = best_OLS_name,
+                    fmla = best_OLS_mod) %>%
+  mutate(model_fit = map2(fmla, train, .f = lm),
+         with_fitted = map2(test, model_fit, add_predictions)) %>%
+  # Next, estimate the test error (MSE)
+  unnest(with_fitted) %>% 
+  # Compute (actual - fitted)^2 
+  mutate(sq_deviations = (strong_dem - pred)^2) %>% 
+  # Compute the mean of the squared deviations (which = MSE)
+  summarize(test_mse = mean(sq_deviations)) %>%
+  pull(test_mse)
+
+tibble(model = "best_OLS", test_MSE = ols_error) %>%
+  knitr::kable(digits = 3)
+```
+
+<br>
+
+## Conclusion
+
+In my conclusion, I want to address a few implications of my findings. To recap, the two **research questions** I posed at the start of this report were the following: 
+
+(1) What explains support for political parties in the U.S. context? The focus here is on identifying statistically and substantively significant predictors (i.e., which specific predictors matter? And how much do these individual predictors matter?)
+
+(2) Overall (i.e., multiple relevant predictors are used), how well can we predict support for political parties? How good is the "best" model? The focus here is on assessing the adjusted R-squared and the size of the test MSE. 
+
+First, it's clear that there are many statistically significant predictors of support for the Democrats (DV). We know this because the automated variable selection methods (e.g., lasso, forward selection) kept many predictors in the model. However, without looking at the relative size of the actual regression coefficients themselves, it's not necessarily clear whether the predictors matter in a substantive sense. For example, it's possible for a predictor to have a very small p-value (e.g., less than 0.00001) even though the substantive effect is small (e.g., perhaps a one-unit increase in the X results in less than a 1% change in the Y value). This would occur if the variance in X is very small; that is, the X values are tightly clustered around the mean value. 
+
+To directly address the issue of substantive significance, I've displayed the results of my final OLS model below. The results suggest that there are indeed a number of substantively significant predictors.
+
+For example, after accounting for the other predictors in the model, black respondents have a mean level of support for the Democrats that is about 1.2 points higher than that of whites -- this is a substantial difference, given that the mean level of support for Democrats is about 4.2 on a 1-7 point scale. Relative to those who self-identify as middle class, those in the upper class have a mean level of support that is about .64 points lower, which is more than 10% of the mean value of the DV. 
+
+Other statistically and substantively significant predictors of support for the Democrats includes support for increasing public spending on welfare, drug problems, defense; religion, and gender.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+library(broom)
+# Get the coefficients of the best OLS mod
+best_OLS <- modbuilding_set %>% 
+  lm(best_OLS_mod, data = .) 
+
+best_OLS %>%
+  tidy() %>%
+  knitr::kable(digits = 3)
+```
+
+In addition, the OLS model above also indicates that the interaction term `year:pol_liberalism` is statistically significant. This means that the strength of the association between political liberalism (or having a liberal ideology) and support for the Democrats is shaped by year. In particular, the interaction term has a positive coefficient, which implies that the link between ideology and party ID has become stronger over time. To help readers visualize this relationship, I've created a graph that shows how the size of the coefficient for political liberalism changed between 1974 and 2016. 
+
+In particular, we can see that the coefficient increases from about 0.27-0.28 to about 0.62 between 1974-2016. In other words, the strength of the association between ideology and party membership doubles in a quantitative sense. In the early 1970s, the mean difference in support for the Democrats among ideological moderates and those who were very liberal was about 0.84 points (or `3*.28`). By 2016, the difference in support for the Democrats among those who were moderate v. very liberal increased to over 1.86 (`3*.62`). This is quite significant, given that the SD of the DV is about 2 points.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+library(interplot) # to plot interaction effects -- load this here b/c it uses a select() function which
+# masks the select() in tidyverse
+
+# Interplot package info
+# https://cran.r-project.org/web/packages/interplot/vignettes/interplot-vignette.html
+
+# Code to center the plot title as the default option
+theme_update(plot.title = element_text(hjust = 0.5))
+
+# Create a plot of the interaction effects between pol_liberalism and year 
+# Use results from the best OLS model 
+interplot(m = best_OLS, var1 = "pol_liberalism", var2 = "year") +
+  labs(title = "Estimated Coefficient of Political Liberalism by Year", 
+       x = "Number of Years Since 1973", y = "Coefficient of Political Liberalism") +
+  geom_hline(yintercept = 0, linetype = "dashed")
+```
+
+Second, how well can the models predict support for the Democrats? It's important to note that while this is related to the first question, it is still distinct: the second question is by definition concerned about the overall accuracy of the predictions given the full set of predictors in a given model. This question is less concerned with the predictive ability of any individual predictor. 
+
+If we can recall, the candidate models achieved test MSEs of about 3. The square root of the MSE, or RMSE, is a measure of the average difference between the predicted and actual DV values. To determine whether an RMSE is "good", we need a baseline or point of reference. We can use the standard deviation (SD) of the dependent variable: it represents the average deviation of the DV values from their mean value. In this case, the RMSE is about 1.7 and the SD of the DV (or Y) is around 2.0. This means that on average, the difference between the predicted and actual values of the DV is about as large as the average deviation of the DV from the mean value -- so unfortunately, the model is not doing that well! 
+
+The adjusted R-squared for this model is about .23, which means that the model is only able to explain about 23% of the variation in the DV; this largely supports the discussion above. In a future iteration of this project, I may try to increase my predictive ability by looking for new data and/or using more complex modeling strategies. For example, I may try fitting a RE model that accounts for the hierarchical structure of the data (e.g., individuals are nested within regions).
+
+
+
